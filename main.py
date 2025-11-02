@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import pytesseract
 from PIL import Image
 import numpy as np
@@ -8,32 +8,172 @@ import re
 import io
 import datetime
 import os
+import sqlite3
+import time
+import threading
 from dotenv import load_dotenv
-from keep_alive import keep_alive
+from flask import Flask
+from waitress import serve
 
 load_dotenv()
 
+# ---------------- ENV CONFIG ----------------
 TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID"))
 SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))
-
-GUILD_ID = int(os.getenv("GUILD_ID"))
 TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE")
 
+# ---------------- PRICE / ROLE DATA ----------------
+ROLE_IDS = {
+    "20": "1433747080660258867",
+    "40": "1433747173039804477",
+    "80": "1433747209475719332",
+    "150": "1433747247295889489",
+    "300": "1433747281932189826"
+}
+
 PRICES = {
-    20: 1433747080660258867,
-    40: 1433747173039804477,
-    80: 1433747209475719332,
-    150: 1433747247295889489,
-    300: 1433747281932189826
+    20: "1433747080660258867",
+    40: "1433747173039804477",
+    80: "1433747209475719332",
+    150: "1433747247295889489",
+    300: "1433747281932189826"
+}
+
+DURATIONS = {
+    "20": 1,
+    "40": 3,
+    "80": 7,
+    "150": 15,
+    "300": 30
 }
 
 TARGET_COMPANY = "บริษัท วันดีดี คอร์ปอเรชั่น จำกัด"
+QR_IMAGE_URL = "https://img2.pic.in.th/pic/b3353abf-04b1-4d82-a806-9859e0748f24.webp"
 
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+# ---------------- Discord Bot ----------------
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ---------------- Database ----------------
+conn = sqlite3.connect("database.db", check_same_thread=False)
+cur = conn.cursor()
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS invoices(
+    invoice_id TEXT PRIMARY KEY,
+    discord_id TEXT,
+    role_id TEXT,
+    plan TEXT,
+    price INTEGER,
+    status TEXT,
+    created_at INTEGER
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS subs(
+    user_id TEXT,
+    role_id TEXT,
+    expires_at INTEGER
+)
+""")
+
+conn.commit()
+
+# ---------------- Helpers ----------------
 def preprocess_image(pil_image):
+    img = np.array(pil_image)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    sharp = cv2.filter2D(blur, -1, np.array([[0,-1,0],[-1,5,-1],[0,-1,0]]))
+    return sharp
+
+def extract_text(image_bytes):
+    pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    processed = preprocess_image(pil)
+    return pytesseract.image_to_string(processed, lang="tha+eng")
+
+def check_company(text):
+    return TARGET_COMPANY in text
+
+def check_price(text):
+    for price in PRICES.keys():
+        if str(price) in text:
+            return price
+    return None
+
+def check_time(text):
+    now = datetime.datetime.now()
+    match = re.search(r"(\d{1,2}[:.]\d{2})", text)
+    if not match:
+        return False
+
+    slip_time = match.group(1).replace(".", ":")
+    try:
+        slip_dt = datetime.datetime.strptime(slip_time, "%H:%M")
+        slip_dt = slip_dt.replace(
+            year=now.year, month=now.month, day=now.day
+        )
+        diff = abs((now - slip_dt).total_seconds())
+        return diff <= 600
+    except:
+        return False
+
+def make_invoice_id():
+    return f"INV{int(time.time())}"
+
+async def give_role_and_store(user_id: int, role_id: str, days: int):
+    guild = bot.get_guild(GUILD_ID)
+    member = guild.get_member(user_id)
+    role = guild.get_role(int(role_id))
+
+    if not member or not role:
+        return False
+
+    try:
+        await member.add_roles(role)
+        expires = int(time.time() + days * 86400)
+
+        cur.execute("INSERT INTO subs VALUES (?,?,?)",
+                    (str(user_id), str(role_id), expires))
+        conn.commit()
+
+        try:
+            await member.send(
+                f"✅ คุณได้รับยศ {role.name} ({days} วัน)"
+            )
+        except:
+            pass
+
+        return True
+    except Exception as e:
+        print("give_role error:", e)
+        return False
+
+async def remove_expired_roles():
+    guild = bot.get_guild(GUILD_ID)
+    rows = cur.execute(
+        "SELECT user_id, role_id, expires_at FROM subs"
+    ).fetchall()
+    now = int(time.time())
+
+    for user_id, role_id, exp in rows:
+        if now >= exp:
+            member = guild.get_member(int(user_id))
+            role = guild.get_role(int(role_id))
+
+            if member and role and role in member.roles:
+                await member.remove_roles(role)
+                try:
+                    await member.send("⛔ ยศของคุณหมดอายุแล้ว")
+                except:
+                    pass
+
+            cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?",
+                        (user_id, role_id))
+            conn.commit()
     """ปรับภาพสำหรับมือถือ"""
     img = np.array(pil_image)
 
