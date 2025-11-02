@@ -6,3 +6,4 @@ pytesseract
 opencv-python-headless
 numpy
 Flask
+waitress
