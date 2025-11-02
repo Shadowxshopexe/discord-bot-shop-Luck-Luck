@@ -1,5 +1,7 @@
 discord.py==2.3.2
 python-dotenv
-Flask
-waitress
 requests
+Pillow
+pytesseract
+opencv-python-headless
+numpy
