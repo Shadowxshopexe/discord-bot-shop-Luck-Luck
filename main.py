@@ -1,39 +1,138 @@
-# main.py
-# Discord Payment Bot — Auto Full (TrueMoney link only)
-# - ตรวจเฉพาะช่อง SCAN_CHANNEL_ID
-# - Auto approve TrueMoney links (pattern gift.truemoney.com/campaign/?v=)
-# - สร้าง invoice, เก็บลง sqlite
-# - แจ้งแอดมิน + ปุ่ม อนุมัติ / ปฏิเสธ / ดูข้อมูลผู้ซื้อ
-# - ปฏิเสธให้ใส่เหตุผลผ่าน Modal
-# - ตรวจหมดอายุและดึง role คืน (subs table)
-# - ไม่ใส่ TOKEN ในโค้ด (ต้องใส่เป็น ENV)
-
-import os
-import sqlite3
-import time
-import threading
-from dataclasses import dataclass
-from typing import Optional
-
 import discord
-from discord.ext import tasks, commands
-from flask import Flask
-from waitress import serve
+from discord.ext import commands
+import pytesseract
+from PIL import Image
+import numpy as np
+import cv2
+import re
+import io
+import datetime
+import os
 from dotenv import load_dotenv
+from keep_alive import keep_alive
 
 load_dotenv()
 
-# ---------------- CONFIG from ENV ----------------
-TOKEN = os.getenv("DISCORD_TOKEN")  # DO NOT hardcode!
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "0"))
-TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE", "0808432571")
-SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID", "0"))
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # optional for webhook integrations
+TOKEN = os.getenv("DISCORD_TOKEN")
+SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID"))
+ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))
 
-# PRICES / DURATIONS / ROLE IDS (from your settings)
-PRICES = {"1":20, "3":40, "7":80, "15":150, "30":300}
-DURATIONS = {"1":1, "3":3, "7":7, "15":15, "30":30}
+GUILD_ID = int(os.getenv("GUILD_ID"))
+TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE")
+
+PRICES = {
+    20: 1433747080660258867,
+    40: 1433747173039804477,
+    80: 1433747209475719332,
+    150: 1433747247295889489,
+    300: 1433747281932189826
+}
+
+TARGET_COMPANY = "บริษัท วันดีดี คอร์ปอเรชั่น จำกัด"
+
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+
+def preprocess_image(pil_image):
+    """ปรับภาพสำหรับมือถือ"""
+    img = np.array(pil_image)
+
+    # แปลงสีเทา
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # ลดนอยส์
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # เพิ่มความคม
+    sharpen_kernel = np.array([[0, -1, 0],
+                               [-1, 5, -1],
+                               [0, -1, 0]])
+    sharp = cv2.filter2D(blur, -1, sharpen_kernel)
+
+    return sharp
+
+
+def extract_text(image_bytes):
+    pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    processed = preprocess_image(pil)
+    text = pytesseract.image_to_string(processed, lang="tha+eng")
+    return text
+
+
+def check_company(text):
+    return TARGET_COMPANY in text
+
+
+def check_price(text):
+    for amount in PRICES.keys():
+        if str(amount) in text:
+            return amount
+    return None
+
+
+def check_time(text):
+    now = datetime.datetime.now()
+    # หาเวลาในรูป เช่น 22:12
+    match = re.search(r"(\d{1,2}[:.]\d{2})", text)
+    if not match:
+        return False
+    slip_time = match.group(1).replace(".", ":")
+    
+    try:
+        slip_dt = datetime.datetime.strptime(slip_time, "%H:%M")
+        slip_dt = slip_dt.replace(year=now.year, month=now.month, day=now.day)
+        diff = abs((now - slip_dt).total_seconds())
+        return diff <= 600  # 10 นาที
+    except:
+        return False
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot Online: {bot.user}")
+
+
+@bot.event
+async def on_message(message):
+    if message.channel.id != SCAN_CHANNEL_ID:
+        return
+
+    if not message.attachments:
+        return
+
+    attachment = message.attachments[0]
+    img_bytes = await attachment.read()
+
+    text = extract_text(img_bytes)
+
+    company_ok = check_company(text)
+    price = check_price(text)
+    time_ok = check_time(text)
+
+    if not company_ok:
+        await message.reply("❌ ไม่พบชื่อบริษัทบนสลิป")
+        return
+    
+    if not price:
+        await message.reply("❌ ไม่พบยอดเงินที่ถูกต้อง")
+        return
+    
+    if not time_ok:
+        await message.reply("❌ สลิปเกิน 10 นาที")
+        return
+
+    # ✅ ส่งของให้ลูกค้า
+    key_channel_id = PRICES[price]
+    key_channel = bot.get_channel(key_channel_id)
+
+    if key_channel:
+        await key_channel.send(f"<@{message.author.id}> ✅ ได้รับจำนวน **{price} บาท** แล้วครับ")
+    
+    await message.reply("✅ ตรวจสอบสำเร็จ ส่งของเรียบร้อยแล้ว!")
+    await message.delete()
+
+keep_alive()
+bot.run(TOKEN)
 ROLE_IDS = {
     "1":"1433747080660258867",
     "3":"1433747173039804477",
