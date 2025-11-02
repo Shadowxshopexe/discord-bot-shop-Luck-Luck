@@ -21,10 +21,10 @@ SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))
 TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE")
 
-# QR ธนาคาร
+# ✅ QR ธนาคาร
 QR_IMAGE_URL = "https://img2.pic.in.th/pic/b3353abf-04b1-4d82-a806-9859e0748f24.webp"
 
-# ราคา → ยศ
+# ✅ ราคา → ยศ
 ROLE_IDS = {
     20: 1433747080660258867,
     40: 1433747173039804477,
@@ -33,7 +33,7 @@ ROLE_IDS = {
     300: 1433747281932189826
 }
 
-# ราคา → วัน
+# ✅ ราคา → จำนวนวัน
 DURATIONS = {
     20: 1,
     40: 3,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS subs(
 """)
 conn.commit()
 
-# ---------------- QR HASH ----------------
+# ---------------- QR MATCHING ----------------
 REF_QR_HASH = None
 
 def load_qr():
@@ -108,6 +108,7 @@ async def check_expire():
             role = guild.get_role(int(rid))
             if member and role:
                 await member.remove_roles(role)
+
             cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?", (uid, rid))
             conn.commit()
 
@@ -145,7 +146,7 @@ async def buy(ctx):
 
     embed = discord.Embed(
         title="🛒 ซื้อแพ็ก",
-        description="เลือกแพ็กที่ต้องการได้เลย",
+        description="เลือกแพ็กที่ต้องการจากปุ่มด้านล่าง",
         color=0x00ffcc
     )
     embed.set_image(url=QR_IMAGE_URL)
@@ -158,7 +159,6 @@ async def buy(ctx):
 async def on_interaction(interaction):
     if not interaction.data:
         return
-    
     cid = interaction.data.get("custom_id", "")
     if cid.startswith("buy_"):
         amt = int(cid.split("_")[1])
@@ -177,7 +177,14 @@ async def on_interaction(interaction):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------------- MESSAGE SCAN ----------------
+# ---------------- DETECT AMOUNT ----------------
+def _detect_amount_from_text(text):
+    for amt in ROLE_IDS.keys():
+        if str(amt) in text:
+            return amt
+    return None
+
+# ---------------- MAIN SCAN HANDLER ----------------
 @bot.event
 async def on_message(msg):
     await bot.process_commands(msg)
@@ -187,7 +194,7 @@ async def on_message(msg):
     if msg.channel.id != SCAN_CHANNEL_ID:
         return
 
-    # ✅ TrueMoney ซอง
+    # ✅ TrueMoney ซอง auto
     if "gift.truemoney.com" in msg.content:
         amt = _detect_amount_from_text(msg.content)
         if amt:
@@ -195,29 +202,31 @@ async def on_message(msg):
             await msg.delete()
             return
 
-    # ✅ สลิปธนาคารตรวจ QR
+    # ✅ สลิปธนาคาร auto-check QR
     if msg.attachments:
         bts = await msg.attachments[0].read()
         user_hash = hash_img(bts)
 
+        # ✅ สลิปถูกต้อง
         if user_hash and (user_hash - REF_QR_HASH) <= 6:
-            amt = _detect_amount_from_text(msg.content) or guess_amount(bts)
+            amt = _detect_amount_from_text(msg.content)
             if amt:
                 await give_role(msg.author, amt)
                 await msg.delete()
                 return
 
-        await msg.reply("❌ สลิปไม่ตรง QR / ไม่สามารถตรวจสอบได้")
+        # ❌ สลิปผิด — ลบทันที + DM เตือน
+        try:
+            await msg.author.send("❌ สลิปไม่ถูกต้อง กรุณาส่งใหม่อีกครั้ง")
+        except:
+            pass
 
-# ---------------- Helper: เดาเงินจากข้อความ ----------------
-def _detect_amount_from_text(text):
-    for amt in ROLE_IDS.keys():
-        if str(amt) in text:
-            return amt
-    return None
+        try:
+            await msg.delete()
+        except:
+            pass
 
-def guess_amount(_):
-    return None  # ปิดระบบเดา ปลอดภัยกว่า
+        return
 
 # ---------------- RUN BOT ----------------
 bot.run(TOKEN)
