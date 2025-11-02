@@ -1,20 +1,15 @@
-# keep_alive.py
 from flask import Flask
-from waitress import serve
-import threading
+from threading import Thread
 
-app = Flask('keep_alive')
+app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is running"
+    return "Bot is running!"
 
 def run():
-    serve(app, host='0.0.0.0', port=3000)
+    app.run(host="0.0.0.0", port=8080)
 
-def start():
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-
-if __name__ == "__main__":
-    run()
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
