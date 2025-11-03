@@ -62,10 +62,11 @@ CREATE TABLE IF NOT EXISTS invoices(
 """)
 conn.commit()
 
-# ---------------- HELPER FUNCTIONS ----------------
 
+# ---------------- HELPER FUNCTIONS ----------------
 def create_invoice_id():
     return f"INV{int(time.time())}"
+
 
 async def give_role(user_id, role_id, days):
     guild = bot.get_guild(GUILD_ID)
@@ -76,9 +77,9 @@ async def give_role(user_id, role_id, days):
         return False
 
     await member.add_roles(role)
-    expire = int(time.time() + days * 86400)
 
-    cur.execute("INSERT INTO subs VALUES (?,?,?)", (user_id, role_id, expire))
+    expires = int(time.time() + days * 86400)
+    cur.execute("INSERT INTO subs VALUES (?,?,?)", (user_id, role_id, expires))
     conn.commit()
 
     try:
@@ -87,6 +88,7 @@ async def give_role(user_id, role_id, days):
         pass
 
     return True
+
 
 async def send_to_admin_invoice(invoice_id, user_id, plan, content=None, image_url=None):
     guild = bot.get_guild(GUILD_ID)
@@ -105,17 +107,21 @@ async def send_to_admin_invoice(invoice_id, user_id, plan, content=None, image_u
     )
 
     if content:
-        embed.add_field(name="ลิงก์ซอง", value=content, inline=False)
+        embed.add_field(name="ลิงก์ซอง TrueMoney", value=content, inline=False)
 
     if image_url:
         embed.set_image(url=image_url)
 
     await ch.send(embed=embed, view=view)
 
-# ---------------- ADMIN UI ----------------
 
+# ---------------- ADMIN UI ----------------
 class ReasonModal(ui.Modal, title="ระบุเหตุผลไม่อนุมัติ"):
-    reason = ui.TextInput(label="เหตุผล", style=discord.TextStyle.paragraph, required=True)
+    reason = ui.TextInput(
+        label="เหตุผลการปฏิเสธ",
+        style=discord.TextStyle.paragraph,
+        required=True
+    )
 
     def __init__(self, invoice_id, user_id):
         super().__init__()
@@ -130,7 +136,7 @@ class ReasonModal(ui.Modal, title="ระบุเหตุผลไม่อน
 
         try:
             user = await bot.fetch_user(int(self.user_id))
-            await user.send(f"⛔ คำสั่งซื้อ `{self.invoice_id}` ถูกปฏิเสธ\nเหตุผล: {reason}")
+            await user.send(f"⛔ คำสั่งซื้อ `{self.invoice_id}` ถูกปฏิเสธ\n📌 เหตุผล: {reason}")
         except:
             pass
 
@@ -153,14 +159,15 @@ class AdminView(ui.View):
         days = DAYS[self.plan]
 
         await give_role(self.user_id, role_id, days)
-        await interaction.response.send_message("✅ อนุมัติแล้ว และมอบยศให้ลูกค้าเรียบร้อย", ephemeral=True)
+
+        await interaction.response.send_message("✅ อนุมัติสำเร็จ! มอบยศให้ลูกค้าแล้ว", ephemeral=True)
 
     @ui.button(label="❌ ไม่อนุมัติ", style=discord.ButtonStyle.red)
     async def reject(self, interaction, button):
         await interaction.response.send_modal(ReasonModal(self.invoice_id, self.user_id))
 
-# ---------------- COMMAND: BUY ----------------
 
+# ---------------- COMMAND: BUY ----------------
 @bot.command()
 async def buy(ctx):
     class BuyButtons(ui.View):
@@ -175,8 +182,8 @@ async def buy(ctx):
                 ))
 
     embed = discord.Embed(
-        title="🛒 ซื้อแพ็ก",
-        description="เลือกแพ็กด้านล่างเพื่อสร้างคำสั่งซื้อ",
+        title="🛒 เลือกแพ็กที่ต้องการ",
+        description="กดปุ่มด้านล่างเพื่อสร้างใบสั่งซื้อ",
         color=0x00ffcc
     )
     embed.add_field(name="TrueMoney", value=TRUEWALLET_PHONE)
@@ -184,8 +191,8 @@ async def buy(ctx):
 
     await ctx.send(embed=embed, view=BuyButtons())
 
-# ---------------- BUTTON HANDLER ----------------
 
+# ---------------- INTERACTION HANDLER ----------------
 @bot.event
 async def on_interaction(interaction):
     if not interaction.data:
@@ -208,9 +215,9 @@ async def on_interaction(interaction):
             description=(
                 f"**แพ็ก:** {plan} วัน\n"
                 f"**ราคา:** {price} บาท\n"
-                f"**เบอร์ TrueMoney:** {TRUEWALLET_PHONE}\n"
+                f"**TrueMoney:** {TRUEWALLET_PHONE}\n"
                 f"**Invoice:** `{invoice_id}`\n\n"
-                "✅ กรุณาส่ง **ลิงก์ซอง** หรือ **สลิปธนาคาร (ภาพ)**\nในห้องตรวจสอบสลิปเท่านั้น"
+                "✅ ส่ง **ลิงก์ซอง** หรือ **รูปสลิป**\nไปที่ห้องตรวจสอบสลิป"
             ),
             color=0x00ffcc
         )
@@ -218,19 +225,22 @@ async def on_interaction(interaction):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------------- MESSAGE HANDLER ----------------
 
+# ---------------- MESSAGE HANDLER (สำคัญที่สุด) ----------------
 @bot.event
-async def on_message(msg):
+async def on_message(msg: discord.Message):
+
+    # ✅ ให้คำสั่ง !buy ทำงาน
     await bot.process_commands(msg)
 
     if msg.author.bot:
         return
 
+    # ✅ ตรวจเฉพาะห้องลูกค้าให้ส่งสลิป/ซอง
     if msg.channel.id != SCAN_CHANNEL_ID:
         return
 
-    # หาคำสั่งซื้อ
+    # ✅ หาใบสั่งซื้อของลูกค้า
     row = cur.execute(
         "SELECT invoice_id, plan FROM invoices WHERE discord_id=? ORDER BY created_at DESC",
         (str(msg.author.id),)
@@ -244,13 +254,21 @@ async def on_message(msg):
         return
 
     invoice_id, plan = row
+    lowered = (msg.content or "").lower()
 
-    # ----- กรณีส่งลิงก์ซอง -----
-    if "gift.truemoney.com" in (msg.content or ""):
-        await send_to_admin_invoice(invoice_id, msg.author.id, plan, content=msg.content)
+    # ✅ กรณีส่งลิงก์ซอง
+    if "gift.truemoney.com" in lowered:
+
+        await send_to_admin_invoice(
+            invoice_id,
+            msg.author.id,
+            plan,
+            content=msg.content,
+            image_url=None
+        )
 
         try:
-            await msg.author.send("✅ ส่งลิงก์ให้แอดมินตรวจสอบแล้ว")
+            await msg.author.send("✅ ส่งลิงก์ซองให้แอดมินตรวจสอบแล้วครับ")
         except:
             pass
 
@@ -258,15 +276,23 @@ async def on_message(msg):
             await msg.delete()
         except:
             pass
+
         return
 
-    # ----- กรณีส่งรูปสลิป -----
+    # ✅ กรณีส่งรูปสลิป
     if msg.attachments:
         att = msg.attachments[0]
-        await send_to_admin_invoice(invoice_id, msg.author.id, plan, image_url=att.url)
+
+        await send_to_admin_invoice(
+            invoice_id,
+            msg.author.id,
+            plan,
+            content=None,
+            image_url=att.url
+        )
 
         try:
-            await msg.author.send("✅ ส่งสลิปให้แอดมินตรวจสอบแล้ว")
+            await msg.author.send("✅ ส่งสลิปให้แอดมินตรวจสอบแล้วครับ")
         except:
             pass
 
@@ -274,16 +300,17 @@ async def on_message(msg):
             await msg.delete()
         except:
             pass
+
         return
 
-    # ----- อื่น ๆ ลบทิ้ง -----
+    # ✅ อื่น ๆ ลบทันที
     try:
         await msg.delete()
     except:
         pass
 
-# ---------------- EXPIRE CHECK ----------------
 
+# ---------------- EXPIRE CHECK ----------------
 @tasks.loop(seconds=30)
 async def check_expired():
     guild = bot.get_guild(GUILD_ID)
@@ -305,19 +332,19 @@ async def check_expired():
             cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?", (uid, rid))
             conn.commit()
 
-# ---------------- KEEP ALIVE ----------------
 
+# ---------------- KEEP ALIVE SERVER ----------------
 app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return "Bot is running"
+    return "Bot is Running"
 
 def run_flask():
     serve(app, host="0.0.0.0", port=3000)
 
-# ---------------- START BOT ----------------
 
+# ---------------- START ----------------
 @bot.event
 async def on_ready():
     print("✅ Bot Online:", bot.user)
