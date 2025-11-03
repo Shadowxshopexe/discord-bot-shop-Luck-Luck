@@ -9,14 +9,20 @@ import os
 
 load_dotenv()
 
+# ---------- ENV ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
-SCAN_CHANNEL_ID = 1433762345058041896        # ห้องลูกค้าส่งสลิป
-ADMIN_CHANNEL_ID = 1433789961403895999       # ห้องแอดมินตรวจสอบ
 
-# ---------- PRICE / ROLE ----------
-PRICES = { "1":20, "3":40, "7":80, "15":150, "30":300 }
-DURATIONS = { "1":1, "3":3, "7":7, "15":15, "30":30 }
+SCAN_CHANNEL_ID = 1433762345058041896      # ลูกค้าส่งสลิป
+ADMIN_CHANNEL_ID = 1433789961403895999     # แอดมินอนุมัติ
+
+# ---------- PAYMENT ----------
+TRUEWALLET_PHONE = "0808432571"
+QR_BANK_URL = "https://img2.pic.in.th/pic/b3353abf-04b1-4d82-a806-9859e0748f24-13025bdde0f821678.webp"
+
+# ---------- PRICE & ROLE ----------
+PRICES = {"1":20, "3":40, "7":80, "15":150, "30":300}
+DURATIONS = {"1":1, "3":3, "7":7, "15":15, "30":30}
 ROLE_IDS = {
     "1":1433747080660258867,
     "3":1433747173039804477,
@@ -25,6 +31,7 @@ ROLE_IDS = {
     "30":1433747281932189826
 }
 
+# ---------- BOT ----------
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -46,16 +53,19 @@ async def give_role(user_id, role_id, days):
     guild = bot.get_guild(GUILD_ID)
     member = guild.get_member(int(user_id))
     role = guild.get_role(int(role_id))
+
     if not member or not role:
         return
 
     await member.add_roles(role)
     expires = int(time.time() + days * 86400)
+
     cur.execute("INSERT INTO subs VALUES (?,?,?)", (user_id, role_id, expires))
     conn.commit()
 
+    # ✅ DM ลูกค้าเมื่ออนุมัติสำเร็จ
     try:
-        await member.send(f"✅ ระบบอนุมัติแล้ว คุณได้รับยศ {role.name} ({days} วัน)")
+        await member.send(f"✅ ยืนยันการชำระเงินเรียบร้อย!\nคุณได้รับยศ **{role.name}** เป็นเวลา **{days} วัน**")
     except:
         pass
 
@@ -66,19 +76,19 @@ async def check_expired():
     rows = cur.execute("SELECT user_id, role_id, expires_at FROM subs").fetchall()
     now = int(time.time())
 
-    for uid, rid, exp in rows:
+    for user_id, role_id, exp in rows:
         if now >= exp:
-            member = guild.get_member(int(uid))
-            role = guild.get_role(int(rid))
+            member = guild.get_member(int(user_id))
+            role = guild.get_role(int(role_id))
 
-            if member and role:
+            if member and role in member.roles:
                 await member.remove_roles(role)
                 try:
-                    await member.send("⛔ ยศหมดอายุแล้ว")
+                    await member.send("⛔ ยศของคุณหมดอายุแล้ว")
                 except:
                     pass
 
-            cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?", (uid, rid))
+            cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?", (user_id, role_id))
             conn.commit()
 
 # ---------- ADMIN PANEL ----------
@@ -88,36 +98,48 @@ class ApprovePanel(discord.ui.View):
         self.user_id = user_id
         self.plan = plan
 
+    # ✅ ปุ่มอนุมัติ
     @discord.ui.button(label="✅ อนุมัติ", style=discord.ButtonStyle.green)
     async def approve(self, interaction, button):
-        await give_role(self.user_id, ROLE_IDS[self.plan], DURATIONS[self.plan])
-        await interaction.response.send_message("✅ อนุมัติสำเร็จและให้ยศแล้ว", ephemeral=True)
 
-    @discord.ui.button(label="❌ ปฏิเสธ", style=discord.ButtonStyle.red)
+        await give_role(self.user_id, ROLE_IDS[self.plan], DURATIONS[self.plan])
+
+        await interaction.response.send_message("✅ อนุมัติสำเร็จ ให้ยศลูกค้าแล้ว", ephemeral=True)
+
+    # ✅ ปุ่มไม่อนุมัติ + เหตุผล
+    @discord.ui.button(label="❌ ไม่อนุมัติ", style=discord.ButtonStyle.red)
     async def reject(self, interaction, button):
 
-        class RejectModal(discord.ui.Modal, title="เหตุผลการปฏิเสธ"):
+        class RejectModal(discord.ui.Modal, title="ระบุเหตุผลการปฏิเสธ"):
             reason = discord.ui.TextInput(label="เหตุผล", style=discord.TextStyle.paragraph)
 
             async def on_submit(self, modal_interaction):
+
                 user = bot.get_user(int(self.user_id))
+
+                # ✅ DM ลูกค้าพร้อมเหตุผล
                 if user:
                     try:
-                        await user.send(f"❌ คำสั่งซื้อถูกปฏิเสธ\nเหตุผล: {self.reason.value}")
+                        await user.send(
+                            f"❌ คำสั่งซื้อของคุณไม่ได้รับการอนุมัติ\n"
+                            f"เหตุผลจากแอดมิน:\n**{self.reason.value}**"
+                        )
                     except:
                         pass
-                await modal_interaction.response.send_message("✅ ปฏิเสธแล้วและแจ้งลูกค้า", ephemeral=True)
+
+                await modal_interaction.response.send_message("✅ ส่งเหตุผลให้ลูกค้าแล้ว", ephemeral=True)
 
         await interaction.response.send_modal(RejectModal())
 
+    # ✅ ปุ่มดูข้อมูล
     @discord.ui.button(label="🔎 ดูข้อมูลผู้ซื้อ", style=discord.ButtonStyle.secondary)
     async def info(self, interaction, button):
         await interaction.response.send_message(
-            f"👤 User ID: {self.user_id}\nแพ็ก: {self.plan} วัน",
+            f"🧾 ผู้ซื้อ: <@{self.user_id}>\nแพ็กที่เลือก: {self.plan} วัน",
             ephemeral=True
         )
 
-# ---------- BUY COMMAND ----------
+# ---------- BUY CMD ----------
 @bot.command()
 async def buy(ctx):
 
@@ -132,13 +154,15 @@ async def buy(ctx):
                 ))
 
     embed = discord.Embed(
-        title="🛒 เลือกแพ็ก",
-        description="เลือกแพ็กที่ต้องการ",
+        title="🛒 เลือกแพ็กที่ต้องการ",
+        description=f"✅ TrueMoney: **{TRUEWALLET_PHONE}**\n✅ หรือใช้ QR ธนาคารด้านล่าง",
         color=0x00ffcc
     )
+    embed.set_image(url=QR_BANK_URL)
+
     await ctx.send(embed=embed, view=BuyButtons())
 
-# ---------- BUY BUTTON ----------
+# ---------- HANDLE BUY BUTTON ----------
 @bot.event
 async def on_interaction(interaction):
     if not interaction.data:
@@ -149,14 +173,19 @@ async def on_interaction(interaction):
         plan = cid.split("_")[1]
 
         embed = discord.Embed(
-            title="📤 ส่งหลักฐานชำระเงิน",
-            description="ส่งสลิปหรือซองได้ที่ห้องที่กำหนด\nระบบจะส่งไปให้แอดมินตรวจต่อ",
+            title="📤 ส่งหลักฐานการชำระเงิน",
+            description=(
+                "✅ ส่งสลิปธนาคาร หรือ\n"
+                "✅ ส่งซอง TrueMoney\n\n"
+                f"ส่งเฉพาะในห้องที่กำหนดเท่านั้น\nเบอร์ TrueMoney: **{TRUEWALLET_PHONE}**"
+            ),
             color=0x00ffcc
         )
+        embed.set_image(url=QR_BANK_URL)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------- MAIN SLIP HANDLER ----------
+# ---------- HANDLE SLIP ----------
 @bot.event
 async def on_message(msg):
     await bot.process_commands(msg)
@@ -164,33 +193,26 @@ async def on_message(msg):
     if msg.author.bot:
         return
 
-    # ✅ อนุญาตให้ส่งเฉพาะ "ห้องลูกค้าส่งสลิป"
     if msg.channel.id != SCAN_CHANNEL_ID:
         return
 
-    # ✅ ไม่ใช่สลิป = ไม่สนใจ
     if not msg.attachments:
         return
 
-    # ✅ ลบสลิปลูกค้าทันที (กันโดนขโมยหลักฐาน)
+    # ✅ ลบสลิปทันที
+    file = await msg.attachments[0].to_file()
     try:
         await msg.delete()
     except:
         pass
 
-    # ✅ ส่งให้ห้องแอดมินตรวจสอบ
+    # ✅ ส่งให้แอดมินตรวจ
     admin_ch = bot.get_channel(ADMIN_CHANNEL_ID)
 
-    # plan default = 1 วัน (ถ้าไม่เจอคำไหน)
-    plan = "1"
-    for p in PRICES.keys():
-        if p in msg.content:
-            plan = p
-
     await admin_ch.send(
-        f"📥 หลักฐานใหม่จาก <@{msg.author.id}>\nแพ็กที่เลือก: {plan} วัน",
-        files=[await msg.attachments[0].to_file()],
-        view=ApprovePanel(str(msg.author.id), plan)
+        f"📥 หลักฐานใหม่จาก <@{msg.author.id}>",
+        file=file,
+        view=ApprovePanel(str(msg.author.id), "1")  # ✅ default 1 วัน
     )
 
 # ---------- KEEP ALIVE ----------
@@ -206,9 +228,9 @@ def run_flask():
 # ---------- READY ----------
 @bot.event
 async def on_ready():
-    print("✅ Bot Online:", bot.user)
+    print("✅ Bot Ready:", bot.user)
     check_expired.start()
     threading.Thread(target=run_flask, daemon=True).start()
 
-# ---------- RUN BOT ----------
+# ---------- START ----------
 bot.run(TOKEN)
