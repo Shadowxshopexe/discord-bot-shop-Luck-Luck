@@ -1,10 +1,5 @@
-discord.py==2.3.2
+discord.py
 python-dotenv
-requests
-Pillow
-pytesseract
-opencv-python-headless
-numpy
 Flask
 waitress
-imagehash
+requests
