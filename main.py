@@ -8,19 +8,19 @@ from discord import ui
 from dotenv import load_dotenv
 from flask import Flask
 from waitress import serve
+import sqlite3
 
 load_dotenv()
 
 # ---------------- CONFIG ----------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
-SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID"))          # ห้องให้ลูกค้าส่งลิงก์
+SCAN_CHANNEL_ID = int(os.getenv("SCAN_CHANNEL_ID"))          # ห้องลูกค้าส่งลิงก์/สลิป
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID"))        # ห้องแอดมินตรวจ
 TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE")
 
 QR_BANK_URL = "https://img2.pic.in.th/pic/b3353abf-04b1-4d82-a806-9859e0748f24-13025bdde0f821678.webp"
 
-# ราคา และ ROLES
 PRICES = {"1": 20, "3": 40, "7": 80, "15": 150, "30": 300}
 
 ROLE_IDS = {
@@ -38,7 +38,6 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- DATABASE ----------------
-import sqlite3
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cur = conn.cursor()
 
@@ -63,7 +62,7 @@ CREATE TABLE IF NOT EXISTS invoices(
 """)
 conn.commit()
 
-# ---------------- FUNCTIONS ----------------
+# ---------------- HELPER FUNCTIONS ----------------
 
 def create_invoice_id():
     return f"INV{int(time.time())}"
@@ -89,23 +88,31 @@ async def give_role(user_id, role_id, days):
 
     return True
 
-async def send_to_admin(invoice_id, user_id, link, plan):
+async def send_to_admin_invoice(invoice_id, user_id, plan, content=None, image_url=None):
     guild = bot.get_guild(GUILD_ID)
     ch = guild.get_channel(ADMIN_CHANNEL_ID)
 
     view = AdminView(invoice_id, user_id, plan)
 
-    msg = (
-        f"🔔 **คำสั่งซื้อใหม่รออนุมัติ**\n"
-        f"ผู้ใช้: <@{user_id}>\n"
-        f"แพ็ก: {plan} วัน ({PRICES[plan]}฿)\n"
-        f"Invoice: `{invoice_id}`\n\n"
-        f"ลิงก์:\n{link}"
+    embed = discord.Embed(
+        title="🔔 คำสั่งซื้อรอตรวจสอบ",
+        description=(
+            f"ผู้ใช้: <@{user_id}>\n"
+            f"แพ็ก: {plan} วัน ({PRICES[plan]}฿)\n"
+            f"Invoice: `{invoice_id}`"
+        ),
+        color=0xffcc00
     )
 
-    await ch.send(msg, view=view)
+    if content:
+        embed.add_field(name="ลิงก์ซอง", value=content, inline=False)
 
-# ---------------- ADMIN VIEW ----------------
+    if image_url:
+        embed.set_image(url=image_url)
+
+    await ch.send(embed=embed, view=view)
+
+# ---------------- ADMIN UI ----------------
 
 class ReasonModal(ui.Modal, title="ระบุเหตุผลไม่อนุมัติ"):
     reason = ui.TextInput(label="เหตุผล", style=discord.TextStyle.paragraph, required=True)
@@ -118,11 +125,9 @@ class ReasonModal(ui.Modal, title="ระบุเหตุผลไม่อน
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason.value
 
-        # เปลี่ยนสถานะ
         cur.execute("UPDATE invoices SET status='rejected' WHERE invoice_id=?", (self.invoice_id,))
         conn.commit()
 
-        # DM ลูกค้า
         try:
             user = await bot.fetch_user(int(self.user_id))
             await user.send(f"⛔ คำสั่งซื้อ `{self.invoice_id}` ถูกปฏิเสธ\nเหตุผล: {reason}")
@@ -130,6 +135,7 @@ class ReasonModal(ui.Modal, title="ระบุเหตุผลไม่อน
             pass
 
         await interaction.response.send_message("✅ ส่งเหตุผลให้ลูกค้าแล้ว", ephemeral=True)
+
 
 class AdminView(ui.View):
     def __init__(self, invoice_id, user_id, plan):
@@ -147,68 +153,64 @@ class AdminView(ui.View):
         days = DAYS[self.plan]
 
         await give_role(self.user_id, role_id, days)
-        await interaction.response.send_message("✅ อนุมัติแล้ว มอบยศให้ลูกค้าเรียบร้อย", ephemeral=True)
+        await interaction.response.send_message("✅ อนุมัติแล้ว และมอบยศให้ลูกค้าเรียบร้อย", ephemeral=True)
 
     @ui.button(label="❌ ไม่อนุมัติ", style=discord.ButtonStyle.red)
     async def reject(self, interaction, button):
         await interaction.response.send_modal(ReasonModal(self.invoice_id, self.user_id))
 
-# ---------------- COMMANDS ----------------
+# ---------------- COMMAND: BUY ----------------
 
 @bot.command()
 async def buy(ctx):
-    class Buy(ui.View):
+    class BuyButtons(ui.View):
         def __init__(self):
             super().__init__()
             for plan, price in PRICES.items():
                 days = DAYS[plan]
-                self.add_item(
-                    ui.Button(
-                        label=f"{days} วัน • {price}฿",
-                        custom_id=f"buy_{plan}",
-                        style=discord.ButtonStyle.green
-                    )
-                )
+                self.add_item(ui.Button(
+                    label=f"{days} วัน • {price}฿",
+                    custom_id=f"buy_{plan}",
+                    style=discord.ButtonStyle.green
+                ))
 
     embed = discord.Embed(
         title="🛒 ซื้อแพ็ก",
-        description="เลือกแพ็กที่ต้องการ",
+        description="เลือกแพ็กด้านล่างเพื่อสร้างคำสั่งซื้อ",
         color=0x00ffcc
     )
     embed.add_field(name="TrueMoney", value=TRUEWALLET_PHONE)
     embed.set_image(url=QR_BANK_URL)
 
-    await ctx.send(embed=embed, view=Buy())
+    await ctx.send(embed=embed, view=BuyButtons())
 
-# ---------------- INTERACTION ----------------
+# ---------------- BUTTON HANDLER ----------------
 
 @bot.event
-async def on_interaction(interaction: discord.Interaction):
+async def on_interaction(interaction):
     if not interaction.data:
         return
 
     cid = interaction.data.get("custom_id")
+
     if cid and cid.startswith("buy_"):
         plan = cid.split("_")[1]
         price = PRICES[plan]
         role_id = ROLE_IDS[plan]
-
         invoice_id = create_invoice_id()
 
-        cur.execute(
-            "INSERT INTO invoices VALUES (?,?,?,?,?,?,?)",
-            (invoice_id, str(interaction.user.id), plan, price, role_id, "pending", int(time.time()))
-        )
+        cur.execute("INSERT INTO invoices VALUES (?,?,?,?,?,?,?)",
+                    (invoice_id, str(interaction.user.id), plan, price, role_id, "pending", int(time.time())))
         conn.commit()
 
         embed = discord.Embed(
-            title="🧾 ใบคำสั่งซื้อ",
+            title="🧾 ใบสั่งซื้อ",
             description=(
                 f"**แพ็ก:** {plan} วัน\n"
                 f"**ราคา:** {price} บาท\n"
-                f"**TrueMoney:** {TRUEWALLET_PHONE}\n"
-                f"**เลขอ้างอิง:** `{invoice_id}`\n\n"
-                "✅ ส่งลิงก์ซองในช่องตรวจสอบสลิปเท่านั้น"
+                f"**เบอร์ TrueMoney:** {TRUEWALLET_PHONE}\n"
+                f"**Invoice:** `{invoice_id}`\n\n"
+                "✅ กรุณาส่ง **ลิงก์ซอง** หรือ **สลิปธนาคาร (ภาพ)**\nในห้องตรวจสอบสลิปเท่านั้น"
             ),
             color=0x00ffcc
         )
@@ -216,7 +218,7 @@ async def on_interaction(interaction: discord.Interaction):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------------- MESSAGE LISTENER ----------------
+# ---------------- MESSAGE HANDLER ----------------
 
 @bot.event
 async def on_message(msg):
@@ -228,42 +230,59 @@ async def on_message(msg):
     if msg.channel.id != SCAN_CHANNEL_ID:
         return
 
-    content = msg.content.strip()
-
-    # ไม่ใช่ลิงก์ซอง → ลบทันที
-    if "gift.truemoney.com" not in content:
-        try:
-            await msg.delete()
-        except:
-            pass
-        return
-
-    # ลิงก์ถูกต้อง → ส่งให้แอดมิน
+    # หาคำสั่งซื้อ
     row = cur.execute(
         "SELECT invoice_id, plan FROM invoices WHERE discord_id=? ORDER BY created_at DESC",
         (str(msg.author.id),)
     ).fetchone()
 
     if not row:
+        try:
+            await msg.delete()
+        except:
+            pass
         return
 
     invoice_id, plan = row
 
-    await send_to_admin(invoice_id, msg.author.id, content, plan)
+    # ----- กรณีส่งลิงก์ซอง -----
+    if "gift.truemoney.com" in (msg.content or ""):
+        await send_to_admin_invoice(invoice_id, msg.author.id, plan, content=msg.content)
 
-    # แจ้งลูกค้า
-    try:
-        await msg.author.send("✅ ลิงก์ถูกส่งให้แอดมินตรวจสอบแล้ว")
-    except:
-        pass
+        try:
+            await msg.author.send("✅ ส่งลิงก์ให้แอดมินตรวจสอบแล้ว")
+        except:
+            pass
 
-    # ลบจากห้องลูกค้า
+        try:
+            await msg.delete()
+        except:
+            pass
+        return
+
+    # ----- กรณีส่งรูปสลิป -----
+    if msg.attachments:
+        att = msg.attachments[0]
+        await send_to_admin_invoice(invoice_id, msg.author.id, plan, image_url=att.url)
+
+        try:
+            await msg.author.send("✅ ส่งสลิปให้แอดมินตรวจสอบแล้ว")
+        except:
+            pass
+
+        try:
+            await msg.delete()
+        except:
+            pass
+        return
+
+    # ----- อื่น ๆ ลบทิ้ง -----
     try:
         await msg.delete()
     except:
         pass
 
-# ---------------- REVOKE ROLE ----------------
+# ---------------- EXPIRE CHECK ----------------
 
 @tasks.loop(seconds=30)
 async def check_expired():
@@ -292,12 +311,12 @@ app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return "OK"
+    return "Bot is running"
 
 def run_flask():
     serve(app, host="0.0.0.0", port=3000)
 
-# ---------------- START ----------------
+# ---------------- START BOT ----------------
 
 @bot.event
 async def on_ready():
