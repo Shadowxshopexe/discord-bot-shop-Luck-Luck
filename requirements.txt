@@ -1,5 +1,5 @@
-discord.py
+discord.py==2.3.2
 python-dotenv
-Flask
-waitress
 requests
+waitress
+flask
