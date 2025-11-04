@@ -1,13 +1,13 @@
 import os
 import time
 import threading
-import sqlite3
 import discord
 from discord.ext import commands, tasks
 from discord import ui
 from dotenv import load_dotenv
 from flask import Flask
 from waitress import serve
+import sqlite3
 
 load_dotenv()
 
@@ -20,10 +20,11 @@ TRUEWALLET_PHONE = os.getenv("TRUEWALLET_PHONE")
 
 QR_BANK_URL = "https://img2.pic.in.th/pic/b3353abf-04b1-4d82-a806-9859e0748f24-13025bdde0f821678.webp"
 
-# แพ็ก = วัน / ราคา
+# ราคา / วัน
 PRICES = {"1": 20, "3": 40, "7": 80, "15": 150, "30": 300}
 DAYS = {"1": 1, "3": 3, "7": 7, "15": 15, "30": 30}
 
+# Role IDs
 ROLE_IDS = {
     "1": "1433747080660258867",
     "3": "1433747173039804477",
@@ -60,51 +61,50 @@ CREATE TABLE IF NOT EXISTS subs(
 """)
 conn.commit()
 
-# ---------------- CREATE INVOICE ----------------
+
+# ---------------- FUNCTION ----------------
 def create_invoice_id():
     return f"INV{int(time.time())}"
 
-# ---------------- GIVE ROLE ----------------
+
 async def give_role(user_id: str, plan: str):
     guild = bot.get_guild(GUILD_ID)
     member = guild.get_member(int(user_id))
-    role_id = ROLE_IDS[plan]
-    role = guild.get_role(int(role_id))
+    role = guild.get_role(int(ROLE_IDS[plan]))
     days = DAYS[plan]
 
     if member and role:
         await member.add_roles(role)
 
-        expires = int(time.time() + days * 86400)
-        cur.execute("INSERT INTO subs VALUES (?, ?, ?)", (user_id, role_id, expires))
+        expire = int(time.time() + days * 86400)
+        cur.execute("INSERT INTO subs VALUES (?, ?, ?)", (user_id, ROLE_IDS[plan], expire))
         conn.commit()
 
         try:
-            await member.send(f"✅ ระบบอนุมัติแล้ว คุณได้รับยศ {days} วัน")
+            await member.send(f"✅ ยืนยันสำเร็จ! คุณได้รับยศ {days} วัน")
         except:
             pass
 
+
 # ---------------- SEND TO ADMIN ----------------
 async def send_to_admin(invoice_id, user_id, plan, content=None, image=None):
-    guild = bot.get_guild(GUILD_ID)
-    admin_ch = guild.get_channel(ADMIN_CHANNEL_ID)
-
-    plan = str(plan)
+    admin_ch = bot.get_channel(ADMIN_CHANNEL_ID)
 
     embed = discord.Embed(
         title="🔔 งานตรวจสอบใหม่",
-        description=f"ผู้ใช้: <@{user_id}>\nแพ็ก: {DAYS[plan]} วัน ({PRICES[plan]}฿)\nInvoice: `{invoice_id}`",
+        description=f"ผู้ใช้: <@{user_id}>\nแพ็ก {DAYS[plan]} วัน ({PRICES[plan]}฿)\nInvoice: `{invoice_id}`",
         color=0xffaa00
     )
 
     if content:
-        embed.add_field(name="ข้อความที่ส่ง", value=content, inline=False)
+        embed.add_field(name="ข้อความ", value=content, inline=False)
 
     if image:
         embed.set_image(url=image)
 
     msg = await admin_ch.send(embed=embed)
     await msg.edit(view=AdminView(invoice_id, user_id, plan, msg))
+
 
 # ---------------- ADMIN UI ----------------
 class RejectModal(ui.Modal, title="เหตุผลไม่อนุมัติ"):
@@ -122,17 +122,17 @@ class RejectModal(ui.Modal, title="เหตุผลไม่อนุมัต
 
         user = await bot.fetch_user(int(self.user_id))
         try:
-            await user.send(f"⛔ คำสั่งซื้อถูกปฏิเสธ\nเหตุผล: {self.reason.value}")
+            await user.send(f"❌ คำสั่งซื้อถูกปฏิเสธ\nเหตุผล: {self.reason.value}")
         except:
             pass
 
-        # ลบโพสต์ในห้องแอดมิน
         try:
             await self.admin_msg.delete()
         except:
             pass
 
         await interaction.response.send_message("✅ ปฏิเสธเรียบร้อย", ephemeral=True)
+
 
 class AdminView(ui.View):
     def __init__(self, invoice_id, user_id, plan, admin_msg):
@@ -154,11 +154,16 @@ class AdminView(ui.View):
         except:
             pass
 
-        await interaction.response.send_message("✅ อนุมัติแล้ว", ephemeral=True)
+        await interaction.response.send_message("✅ อนุมัติสำเร็จ", ephemeral=True)
 
     @ui.button(label="❌ ไม่อนุมัติ", style=discord.ButtonStyle.red)
     async def reject(self, interaction, button):
-        await interaction.response.send_modal(RejectModal(self.invoice_id, self.user_id, self.admin_msg))
+        await interaction.response.send_modal(RejectModal(
+            self.invoice_id,
+            self.user_id,
+            self.admin_msg
+        ))
+
 
 # ---------------- BUY COMMAND ----------------
 @bot.command()
@@ -167,18 +172,15 @@ async def buy(ctx):
         def __init__(self):
             super().__init__()
             for plan, price in PRICES.items():
-                days = DAYS[plan]
-                self.add_item(
-                    ui.Button(
-                        label=f"{days} วัน • {price}฿",
-                        custom_id=f"buy_{plan}",
-                        style=discord.ButtonStyle.green
-                    )
-                )
+                self.add_item(ui.Button(
+                    label=f"{DAYS[plan]} วัน • {price}฿",
+                    custom_id=f"buy_{plan}",
+                    style=discord.ButtonStyle.green
+                ))
 
     embed = discord.Embed(
         title="🛒 ซื้อแพ็ก",
-        description="เลือกแพ็กเพื่อสร้างใบสั่งซื้อ",
+        description="เลือกแพ็กที่คุณต้องการด้านล่าง",
         color=0x00ffcc
     )
     embed.add_field(name="เบอร์ TrueMoney", value=TRUEWALLET_PHONE)
@@ -186,14 +188,14 @@ async def buy(ctx):
 
     await ctx.send(embed=embed, view=BuyView())
 
-# ---------------- BUTTON BUY HANDLER ----------------
+
+# ---------------- BUTTON HANDLER ----------------
 @bot.event
 async def on_interaction(interaction):
     if not interaction.data:
         return
 
     cid = interaction.data.get("custom_id")
-
     if cid and cid.startswith("buy_"):
         plan = cid.split("_")[1]
         price = PRICES[plan]
@@ -205,15 +207,16 @@ async def on_interaction(interaction):
 
         embed = discord.Embed(
             title="🧾 ใบสั่งซื้อ",
-            description=f"แพ็ก: {DAYS[plan]} วัน\nราคา: {price} บาท\nInvoice: `{invoice_id}`\n\n"
-                        f"✅ ส่ง **ซอง** หรือ **สลิปธนาคาร**\nในห้องตรวจสอบเท่านั้น",
+            description=f"แพ็ก: {DAYS[plan]} วัน\nราคา: {price}฿\nInvoice: `{invoice_id}`\n\n"
+                        f"✅ ส่ง **ลิงก์ซอง** หรือ **ภาพสลิป**\nในห้องตรวจสอบเท่านั้น",
             color=0x00ffcc
         )
         embed.set_image(url=QR_BANK_URL)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------------- MESSAGE HANDLER ----------------
+
+# ---------------- MESSAGE HANDLER (ลูกค้า) ----------------
 @bot.event
 async def on_message(msg):
     await bot.process_commands(msg)
@@ -224,7 +227,6 @@ async def on_message(msg):
     if msg.channel.id != SCAN_CHANNEL_ID:
         return
 
-    # หาใบสั่งซื้อของ user
     row = cur.execute(
         "SELECT invoice_id, plan FROM invoices WHERE discord_id=? AND status='pending' ORDER BY created_at DESC",
         (str(msg.author.id),)
@@ -237,26 +239,28 @@ async def on_message(msg):
     invoice_id, plan = row
     plan = str(plan)
 
-    # ------- ลิงก์ซอง -------
+    # ซอง TrueMoney
     if "gift.truemoney.com" in msg.content.lower():
         await send_to_admin(invoice_id, msg.author.id, plan, content=msg.content)
         await msg.delete()
         return
 
-    # ------- ภาพสลิป -------
+    # ภาพสลิป
     if msg.attachments:
         await send_to_admin(invoice_id, msg.author.id, plan, image=msg.attachments[0].url)
         await msg.delete()
         return
 
-    # ------- อื่น ๆ ลบทิ้ง -------
+    # ข้อความอื่นๆ ลบออก
     await msg.delete()
 
-# ---------------- EXPIRE CHECK ----------------
+
+# ---------------- EXPIRE SYSTEM ----------------
 @tasks.loop(seconds=30)
 async def check_expired():
     guild = bot.get_guild(GUILD_ID)
     now = int(time.time())
+
     rows = cur.execute("SELECT user_id, role_id, expires_at FROM subs").fetchall()
 
     for uid, rid, exp in rows:
@@ -266,18 +270,25 @@ async def check_expired():
 
             if member and role in member.roles:
                 await member.remove_roles(role)
+                try:
+                    await member.send("⛔ ยศหมดอายุแล้ว")
+                except:
+                    pass
+
             cur.execute("DELETE FROM subs WHERE user_id=? AND role_id=?", (uid, rid))
             conn.commit()
+
 
 # ---------------- KEEP ALIVE ----------------
 app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return "Bot is running"
+    return "Bot Running"
 
 def run_flask():
     serve(app, host="0.0.0.0", port=3000)
+
 
 # ---------------- START ----------------
 @bot.event
@@ -285,5 +296,6 @@ async def on_ready():
     print("✅ Bot Online:", bot.user)
     check_expired.start()
     threading.Thread(target=run_flask, daemon=True).start()
+
 
 bot.run(TOKEN)
