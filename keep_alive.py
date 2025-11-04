@@ -1,11 +1,11 @@
 from flask import Flask
-from threading import Thread
+from waitress import serve
 
-app = Flask('')
+app = Flask(__name__)
 
-@app.route('/')
+@app.get("/")
 def home():
-    return "Bot is running!"
+    return "Bot is running"
 
-def keep_alive():
-    Thread(target=lambda: app.run(host='0.0.0.0', port=3000)).start()
+def run_keep_alive():
+    serve(app, host="0.0.0.0", port=3000)
